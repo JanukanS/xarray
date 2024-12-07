@@ -960,6 +960,10 @@ class CFEncodedBase(DatasetIOBase):
     def test_roundtrip_mask_and_scale(self, decoded_fn, encoded_fn, dtype) -> None:
         if hasattr(self, "zarr_version") and dtype == np.float32:
             pytest.skip("float32 will be treated as float64 in zarr")
+        on_riscv64 = platform.machine() == "riscv64"
+        if hasattr(self, "_netCDF4_data") and on_riscv64:
+            # implemented due GH issue #9815
+            pytest.skip("Suspected issue with netCDF4 on riscv64 architecture")
         decoded = decoded_fn(dtype)
         encoded = encoded_fn(dtype)
         if decoded["x"].encoding["dtype"] == "u1" and not (
@@ -2024,6 +2028,8 @@ class NetCDF4Base(NetCDFBase):
 
 @requires_netCDF4
 class TestNetCDF4Data(NetCDF4Base):
+    _netCDF4_data = True
+
     @contextlib.contextmanager
     def create_store(self):
         with create_tmp_file() as tmp_file:
