@@ -55,7 +55,6 @@ from xarray.core.alignment import (
     align,
 )
 from xarray.core.arithmetic import DatasetArithmetic
-from xarray.core.array_api_compat import to_like_array
 from xarray.core.common import (
     DataWithCoords,
     _contains_datetime_like_objects,
@@ -128,7 +127,7 @@ from xarray.core.variable import (
     calculate_dimensions,
 )
 from xarray.namedarray.parallelcompat import get_chunked_array_type, guess_chunkmanager
-from xarray.namedarray.pycompat import array_type, is_chunked_array, to_numpy
+from xarray.namedarray.pycompat import array_type, is_chunked_array
 from xarray.plot.accessor import DatasetPlotAccessor
 from xarray.util.deprecation_helpers import _deprecate_positional_args, deprecate_dims
 
@@ -2989,6 +2988,23 @@ class Dataset(
         method, except this method does not require knowing the order of
         each array's dimensions.
 
+        .. warning::
+
+          Do not try to assign values when using ``isel``::
+
+            da1 = xr.DataArray([0, 1, 2, 3], dims=["x"])
+            da2 = xr.DataArray([1, 2, 3, 4], dims=["x"])
+            ds = xr.Dataset({"a": da1, "b": da2})
+            # DO NOT do this
+            ds.isel(x=1) = -1
+            # Index each DataArray instead
+            for name, arr in ds.items():
+                arr[1] = -1
+
+          Assigning values with the chained indexing using ``.isel`` will fail
+          silently. Directly index each DataArray to assign values at the
+          selected indices.
+
         Parameters
         ----------
         indexers : dict, optional
@@ -3195,6 +3211,23 @@ class Dataset(
         that slices are treated as inclusive of both the start and stop values,
         unlike normal Python indexing.
 
+        .. warning::
+
+          Do not try to assign values when using ``sel``::
+
+            da1 = xr.DataArray([0, 1, 2, 3], dims=["x"], coords=[[0.1, 0.2, 0.3, 0.4]])
+            da2 = xr.DataArray([1, 2, 3, 4], dims=["x"], coords=[[0.1, 0.2, 0.3, 0.4]])
+            ds = xr.Dataset({"a": da1, "b": da2})
+            # DO NOT do this
+            ds.sel(x=0.1) = -1
+            # Access each DataArray with .loc instead
+            for name, arr in ds.items():
+                arr.loc[0.1] = -1
+
+          Assigning values with the chained indexing using ``.sel`` will fail
+          silently. Index each DataArray with ``.loc`` to assign values at the
+          selected indices.
+
         Parameters
         ----------
         indexers : dict, optional
@@ -3276,11 +3309,9 @@ class Dataset(
         subset = self[[name for name in self._variables if name not in is_chunked]]
 
         no_slices: list[list[int]] = [
-            (
-                list(range(*idx.indices(self.sizes[dim])))
-                if isinstance(idx, slice)
-                else idx
-            )
+            list(range(*idx.indices(self.sizes[dim])))
+            if isinstance(idx, slice)
+            else idx
             for idx in indices
         ]
         no_slices = [idx for idx in no_slices if idx]
@@ -5104,6 +5135,7 @@ class Dataset(
             variables, coord_names=coord_names, indexes=indexes_
         )
 
+    @_deprecate_positional_args("v2023.10.0")
     def reset_index(
         self,
         dims_or_levels: Hashable | Sequence[Hashable],
@@ -5741,6 +5773,7 @@ class Dataset(
             variables, coord_names=coord_names, indexes=indexes
         )
 
+    @_deprecate_positional_args("v2023.10.0")
     def unstack(
         self,
         dim: Dims = None,
@@ -6502,6 +6535,7 @@ class Dataset(
             ds._variables[name] = var.transpose(*var_dims)
         return ds
 
+    @_deprecate_positional_args("v2023.10.0")
     def dropna(
         self,
         dim: Hashable,
@@ -6620,7 +6654,7 @@ class Dataset(
             array = self._variables[k]
             if dim in array.dims:
                 dims = [d for d in array.dims if d != dim]
-                count += to_numpy(array.count(dims).data)
+                count += np.asarray(array.count(dims))
                 size += math.prod([self.sizes[d] for d in dims])
 
         if thresh is not None:
@@ -7615,7 +7649,7 @@ class Dataset(
 
         if isinstance(idx, pd.MultiIndex):
             dims = tuple(
-                name if name is not None else f"level_{n}"  # type: ignore[redundant-expr]
+                name if name is not None else "level_%i"  # type: ignore[redundant-expr]
                 for n, name in enumerate(idx.names)
             )
             for dim, lev in zip(dims, idx.levels, strict=True):
@@ -7975,6 +8009,7 @@ class Dataset(
             if v in self.variables:
                 self.variables[v].attrs = other.variables[v].attrs
 
+    @_deprecate_positional_args("v2023.10.0")
     def diff(
         self,
         dim: Hashable,
@@ -8322,6 +8357,7 @@ class Dataset(
             indices[key] = order if ascending else order[::-1]
         return aligned_self.isel(indices)
 
+    @_deprecate_positional_args("v2023.10.0")
     def quantile(
         self,
         q: ArrayLike,
@@ -8502,6 +8538,7 @@ class Dataset(
         )
         return new.assign_coords(quantile=q)
 
+    @_deprecate_positional_args("v2023.10.0")
     def rank(
         self,
         dim: Hashable,
@@ -8731,17 +8768,16 @@ class Dataset(
                     coord_names.add(k)
             else:
                 if k in self.data_vars and dim in v.dims:
-                    coord_data = to_like_array(coord_var.data, like=v.data)
                     if _contains_datetime_like_objects(v):
                         v = datetime_to_numeric(v, datetime_unit=datetime_unit)
                     if cumulative:
                         integ = duck_array_ops.cumulative_trapezoid(
-                            v.data, coord_data, axis=v.get_axis_num(dim)
+                            v.data, coord_var.data, axis=v.get_axis_num(dim)
                         )
                         v_dims = v.dims
                     else:
                         integ = duck_array_ops.trapz(
-                            v.data, coord_data, axis=v.get_axis_num(dim)
+                            v.data, coord_var.data, axis=v.get_axis_num(dim)
                         )
                         v_dims = list(v.dims)
                         v_dims.remove(dim)
@@ -9472,6 +9508,7 @@ class Dataset(
         attrs = self._attrs if keep_attrs else None
         return self._replace_with_new_dims(variables, indexes=indexes, attrs=attrs)
 
+    @_deprecate_positional_args("v2023.10.0")
     def idxmin(
         self,
         dim: Hashable | None = None,
@@ -9570,6 +9607,7 @@ class Dataset(
             )
         )
 
+    @_deprecate_positional_args("v2023.10.0")
     def idxmax(
         self,
         dim: Hashable | None = None,
@@ -10252,6 +10290,7 @@ class Dataset(
 
         return result
 
+    @_deprecate_positional_args("v2023.10.0")
     def drop_duplicates(
         self,
         dim: Hashable | Iterable[Hashable],
@@ -10722,8 +10761,7 @@ class Dataset(
             (otherwise result is NA). The default, None, is equivalent to
             setting min_periods equal to the size of the window.
         center : bool or Mapping to int, default: False
-            Set the labels at the center of the window. The default, False,
-            sets the labels at the right edge of the window.
+            Set the labels at the center of the window.
         **window_kwargs : optional
             The keyword arguments form of ``dim``.
             One of dim or window_kwargs must be provided.
